@@ -1,9 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import loguru
+from flexget import log
 from flexget import plugin
 from flexget.entry import Entry
 from flexget.event import event
+from flexget.manager import manager
 from loguru import logger
 
 from .ptsites import executor
@@ -73,14 +76,24 @@ class PluginAutoSignIn:
         for entry in task.all_entries:
             if date_now not in entry['title']:
                 entry.reject('{} out of date!'.format(entry['title']))
+        handlers = logger._core.handlers.values()
+        logger._core.handlers = {}
+        executor.thread_log = {}
         with ThreadPoolExecutor(max_workers=max_workers) as threadExecutor:
-            for entry, feature in [(entry, threadExecutor.submit(executor.sign_in, entry, config))
-                                   for entry in task.accepted]:
-                try:
-                    feature.result()
-                except Exception as e:
-                    logger.exception(e)
-                    entry.fail_with_prefix('Exception: ' + str(e))
+            for entry in task.accepted:
+                threadExecutor.submit(executor.sign_in_wrapper, entry, config)
+        for e in executor.thread_log.values():
+            for handler in handlers:
+                if isinstance(handler._sink, loguru._file_sink.FileSink):
+                    for msg in e[0]:
+                        handler._sink.write(msg)
+                if not isinstance(handler._sink, loguru._file_sink.FileSink):
+                    for msg in e[1]:
+                        handler._sink.write(msg)
+        logger.remove()
+        log._logging_started = False
+        log.initialize()
+        manager._init_logging()
         if config.get('get_details', True):
             DetailsReport().build(task)
 
